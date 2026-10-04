@@ -1,6 +1,8 @@
 (function () {
   "use strict";
 
+  const debugEnabled = new URLSearchParams(window.location.search).get("debug") === "1";
+
   const STORAGE_KEY = "itabashiQuestMinimalProgress";
   const STORAGE_KEYS = [
     STORAGE_KEY,
@@ -36,10 +38,7 @@
 
   function initApp() {
     try {
-      const debugBar = document.getElementById("debugBar");
-      if (debugBar) {
-        debugBar.hidden = new URLSearchParams(window.location.search).get("debug") !== "1";
-      }
+      setDebugStatus("");
       console.log("app init started");
       setDebugStatus("app init started");
 
@@ -544,21 +543,32 @@
   }
 
   function renderDebug() {
-    elements.debugBar.textContent = [
+    if (!debugEnabled) {
+      setDebugStatus("");
+      return;
+    }
+    setDebugStatus([
       "app init started",
       "quest data loaded",
       state.currentStageIndex === 0 ? "render first stage" : `render stage ${state.currentStageIndex}`,
       "app init completed",
       `currentStageIndex: ${state.currentStageIndex}`,
       `completedStageIds: ${JSON.stringify(state.completedStageIds)}`
-    ].join(" / ");
+    ].join(" / "));
   }
 
   function setDebugStatus(message) {
     const debugBar = document.getElementById("debugBar");
-    if (debugBar) {
-      debugBar.textContent = message;
+    if (!debugBar) return;
+    if (!debugEnabled) {
+      debugBar.hidden = true;
+      debugBar.style.display = "none";
+      debugBar.textContent = "";
+      return;
     }
+    debugBar.hidden = false;
+    debugBar.style.display = "block";
+    debugBar.textContent = message;
   }
 
   function showInitError(error) {
