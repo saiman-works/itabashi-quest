@@ -36,6 +36,10 @@
 
   function initApp() {
     try {
+      const debugBar = document.getElementById("debugBar");
+      if (debugBar) {
+        debugBar.hidden = new URLSearchParams(window.location.search).get("debug") !== "1";
+      }
       console.log("app init started");
       setDebugStatus("app init started");
 
