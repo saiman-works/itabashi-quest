@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Cache-Control" content="no-store">
+  <title>板橋クエスト</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIINfQkR3cJQ1W8t5gK3G6GzRk5q6Q7V0zA=" crossorigin="">
+  <link rel="stylesheet" href="style.css?v=dialogue1">
+</head>
+<body>
+  <div id="debugBar" class="debug-bar">
+    app loaded: HTML visible / quest loaded: waiting / currentStageIndex: - / completedStageIds: []
+  </div>
+
+  <main id="app" class="app">
+    <header class="hero">
+      <p id="chapterTitle" class="chapter">第一章：成仏暗渠</p>
+      <h1 id="appTitle">板橋クエスト</h1>
+      <p id="questTitle" class="quest-title">暗渠の龍を封印せよ</p>
+      <p id="questSubtitle" class="subtitle">花壇の願いと暗渠の龍</p>
+    </header>
+
+    <section class="panel">
+      <div class="destination" aria-live="polite">
+        <p class="label" id="destinationLabel">次の目的地</p>
+        <strong id="destinationName">第零札：花壇の願い</strong>
+        <p id="destinationPlace">光が丘公園 赤塚口</p>
+      </div>
+      <p class="label">現在のステージ番号</p>
+      <p id="stageNumber" class="stage-number">0 / 9</p>
+
+      <p class="label">現在のステージ名</p>
+      <h2 id="stageName">読み込み中</h2>
+
+      <p class="label">説明文</p>
+      <p id="stageDescription" class="description">
+        アプリを読み込んでいます。もしこの文章のまま止まる場合でも、HTMLは表示されています。
+      </p>
+
+      <button id="dialogueStartButton" class="main-button" type="button" hidden>花壇の妖精に話しかける</button>
+      <div id="dialogueBox" class="dialogue-box" hidden>
+        <div class="dialogue-portrait" aria-hidden="true">
+          <img id="fairyImage" class="fairy-image" alt="" hidden>
+          <span id="fairyFallback" class="fairy-fallback">花</span>
+        </div>
+        <div class="dialogue-content">
+          <div aria-live="polite" aria-atomic="true">
+            <p id="dialogueSpeaker" class="dialogue-speaker"></p>
+            <p id="dialogueText" class="dialogue-text"></p>
+          </div>
+          <button id="dialogueNextButton" class="dialogue-next-button" type="button">次へ</button>
+        </div>
+      </div>
+      <button id="mainButton" class="main-button" type="button">読み込み中</button>
+
+      <div class="progress-wrap">
+        <div class="progress-label">
+          <span>進捗</span>
+          <strong id="progressText">0 / 9</strong>
+        </div>
+        <div class="progress-track">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="map-panel" aria-label="地図">
+      <div class="map-header">
+        <div>
+          <p class="label">地図</p>
+          <h2>封印地点</h2>
+        </div>
+        <p id="mapStatus" class="map-status">地図を準備しています</p>
+      </div>
+      <div id="map" class="map"></div>
+    </section>
+
+    <section id="rewardArea" class="reward-area" hidden>
+      <p class="label">報酬カード</p>
+      <div class="reward-card">
+        <p class="card-kicker">ITABASHI QUEST</p>
+        <h2 id="rewardTitle">暗渠の龍封印カード</h2>
+        <p id="rewardQuest">暗渠の龍を封印せよ</p>
+        <p id="rewardDescription">光が丘公園赤塚口から始まる、暗渠の龍封印の証。</p>
+        <p id="clearedAt" class="cleared-at"></p>
+      </div>
+    </section>
+
+    <section class="actions">
+      <button id="reset-button" class="reset-button" type="button">最初からやり直す</button>
+    </section>
+  </main>
+
+  <button id="manualClearButton" class="manual-clear-button" type="button">
+    現在ステージを手動クリア
+  </button>
+
+  <noscript>
+    <div class="noscript-warning">
+      JavaScriptが無効です。手動クリア確認にはJavaScriptを有効にしてください。
+    </div>
+  </noscript>
+
+  <script>
+    console.log("app loaded");
+    (function () {
+      var resetButton = document.getElementById("reset-button");
+      if (!resetButton) return;
+      resetButton.onclick = function () {
+        console.log("reset clicked");
+        try {
+          localStorage.clear();
+          sessionStorage.clear();
+        } catch (error) {
+          console.error("inline reset failed", error);
+        }
+        location.href = "index.html?leaflet=4&reset=" + Date.now();
+      };
+    })();
+  </script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <script src="data/quests.js?v=dialogue1"></script>
+  <script src="app.js?v=dialogue1"></script>
+</body>
+</html>
