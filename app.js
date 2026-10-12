@@ -2,6 +2,7 @@
   "use strict";
 
   const debugEnabled = new URLSearchParams(window.location.search).get("debug") === "1";
+  const gpsTestEnabled = new URLSearchParams(window.location.search).get("gpsTest") === "1";
 
   const STORAGE_KEY = "itabashiQuestMinimalProgress";
   const STORAGE_KEYS = [
@@ -24,6 +25,11 @@
   let markerLayer = null;
   let dragonLine = null;
   let dialogueState = { stageId: null, index: -1, completed: false };
+  const GPS_VALID_MS = 120000;
+  let gpsPosition = null;
+  let gpsRequestId = 0;
+  let gpsTimeout = null;
+  let checkin = createCheckinState();
 
   attachEmergencyReset();
   startWhenReady();
@@ -81,6 +87,18 @@
       "destinationLabel",
       "destinationName",
       "destinationPlace",
+      "gpsPanel",
+      "gpsTestNotice",
+      "locationButton",
+      "distanceText",
+      "gpsStatus",
+      "gpsAccuracy",
+      "prayerPanel",
+      "prayerMessage",
+      "prayerPercent",
+      "prayerGauge",
+      "prayButton",
+      "sealButton",
       "stageDescription",
       "progressText",
       "progressFill",
@@ -118,6 +136,7 @@
   function bindEvents() {
     elements.mainButton.onclick = () => {
       const stage = currentQuest.stages[state.currentStageIndex];
+      if (requiresGpsCheckin(stage)) return;
       if (stage?.introDialogue?.length && !dialogueState.completed) return;
       completeCurrentStage();
     };
@@ -128,6 +147,12 @@
       invalidateMapSoon();
     };
     elements.dialogueNextButton.onclick = advanceDialogue;
+    elements.locationButton.onclick = requestCurrentLocation;
+    elements.prayButton.onclick = addPrayerPower;
+    elements.sealButton.onclick = () => {
+      if (!ensureValidCheckin() || checkin.prayerTaps < 5) return;
+      completeCurrentStage();
+    };
     elements.manualClearButton.onclick = () => {
       console.log("manual clear clicked");
       completeCurrentStage();
@@ -148,7 +173,7 @@
       } catch (error) {
         console.error("emergency reset storage clear failed", error);
       }
-      location.href = "index.html?leaflet=4&reset=" + Date.now();
+      location.href = getResetUrl();
     };
   }
 
@@ -211,6 +236,8 @@
     elements.mainButton.disabled = isCleared;
     elements.manualClearButton.disabled = false;
     renderIntroDialogue(stage, isCleared);
+    if (requiresGpsCheckin(stage) && !isCleared) elements.mainButton.hidden = true;
+    renderGpsUI();
 
     renderReward(isCleared);
     renderMapSafely();
@@ -229,6 +256,7 @@
       state.completedStageIds.push(stage.id);
     }
 
+    invalidateCheckin();
     state.currentStageIndex += 1;
     if (state.currentStageIndex >= total && !state.clearedAt) {
       state.clearedAt = new Date().toISOString();
@@ -290,10 +318,19 @@
   function resetProgress() {
     console.log("reset clicked");
     clearAllStorage();
+    invalidateCheckin();
+    gpsPosition = null;
     state = createInitialState();
     dialogueState = { stageId: null, index: -1, completed: false };
     renderApp();
-    location.href = "index.html?leaflet=4&reset=" + Date.now();
+    location.href = getResetUrl();
+  }
+
+  function getResetUrl() {
+    const params = new URLSearchParams(window.location.search);
+    params.set("leaflet", "4");
+    params.set("reset", String(Date.now()));
+    return "index.html?" + params.toString();
   }
 
   function createInitialState() {
@@ -304,6 +341,179 @@
       finalCleared: false,
       dragonBodyRevealed: false
     };
+  }
+
+  function createCheckinState() {
+    return { pending: false, stageId: null, distance: null, verifiedAt: null,
+      prayerTaps: 0, message: "安全な場所で立ち止まって現在地を確認してください。" };
+  }
+
+  function requiresGpsCheckin(stage) {
+    return stage?.type === "seal" || stage?.type === "final";
+  }
+
+  function invalidateCheckin() {
+    // getCurrentPosition cannot be cancelled; ignore callbacks from an older stage/request.
+    gpsRequestId += 1;
+    clearTimeout(gpsTimeout);
+    gpsTimeout = null;
+    checkin = createCheckinState();
+  }
+
+  function getCheckinRadiusMeters() {
+    return currentQuest.checkinRadiusMeters || 50;
+  }
+
+  function calculateDistanceMeters(lat1, lng1, lat2, lng2) {
+    const radians = (degrees) => degrees * Math.PI / 180;
+    const a = Math.sin(radians(lat2 - lat1) / 2) ** 2 +
+      Math.cos(radians(lat1)) * Math.cos(radians(lat2)) * Math.sin(radians(lng2 - lng1) / 2) ** 2;
+    return 6371000 * 2 * Math.atan2(Math.sqrt(Math.min(1, a)), Math.sqrt(Math.max(0, 1 - a)));
+  }
+
+  function requestCurrentLocation() {
+    const stage = currentQuest.stages[state.currentStageIndex];
+    if (!stage || checkin.pending) return;
+    invalidateCheckin();
+    gpsPosition = null;
+    if (gpsTestEnabled) {
+      applyGpsPosition(stage, { latitude: stage.lat, longitude: stage.lng, accuracy: 0 });
+      return;
+    }
+    if (!window.isSecureContext) {
+      showGpsError("HTTPSの公開URL、またはPCのlocalhostで現在地を確認してください。");
+      return;
+    }
+    if (!navigator.geolocation) {
+      showGpsError("このブラウザでは位置情報を取得できません。別のブラウザでお試しください。");
+      return;
+    }
+
+    const requestId = gpsRequestId;
+    checkin.pending = true;
+    checkin.message = "現在地を確認中...";
+    renderGpsUI();
+    const isActiveRequest = () => requestId === gpsRequestId && checkin.pending &&
+      currentQuest.stages[state.currentStageIndex]?.id === stage.id;
+    const fail = (error) => {
+      if (!isActiveRequest()) return;
+      clearTimeout(gpsTimeout);
+      gpsTimeout = null;
+      const messages = {
+        1: "位置情報を許可してください。ブラウザと端末の位置情報設定を確認して、もう一度お試しください。",
+        2: "現在地を取得できませんでした。安全な屋外で、もう一度お試しください。",
+        3: "現在地の確認がタイムアウトしました。通信や位置情報設定を確認して、もう一度お試しください。"
+      };
+      showGpsError(messages[error?.code] || "位置情報の取得に失敗しました。もう一度お試しください。");
+    };
+    // Also bound the wait when a browser leaves its permission prompt unanswered.
+    gpsTimeout = setTimeout(() => fail({ code: 3 }), 20000);
+    try {
+      navigator.geolocation.getCurrentPosition((position) => {
+        if (!isActiveRequest()) return;
+        const { latitude, longitude, accuracy } = position.coords || {};
+        if (!Number.isFinite(latitude) || !Number.isFinite(longitude) ||
+          Math.abs(latitude) > 90 || Math.abs(longitude) > 180) {
+          fail({ code: 2 });
+          return;
+        }
+        clearTimeout(gpsTimeout);
+        gpsTimeout = null;
+        applyGpsPosition(stage, { latitude, longitude, accuracy });
+      }, fail, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
+    } catch (error) {
+      fail(error);
+    }
+  }
+
+  function applyGpsPosition(stage, { latitude, longitude, accuracy }) {
+    checkin.pending = false;
+    gpsPosition = { lat: latitude, lng: longitude, accuracy, capturedAt: Date.now() };
+    checkin.stageId = stage.id;
+    checkin.verifiedAt = Date.now();
+    checkin.distance = calculateDistanceMeters(latitude, longitude, stage.lat, stage.lng);
+    checkin.message = checkin.distance <= getCheckinRadiusMeters()
+      ? "近くにいます。札に祈りをこめられます。"
+      : `あと${Math.ceil(checkin.distance - getCheckinRadiusMeters())}mほど近づいてください。`;
+    renderGpsUI();
+    renderMapSafely();
+  }
+
+  function showGpsError(message) {
+    checkin.pending = false;
+    checkin.stageId = null;
+    checkin.distance = null;
+    checkin.verifiedAt = null;
+    checkin.prayerTaps = 0;
+    checkin.message = message;
+    gpsPosition = null;
+    renderGpsUI();
+    renderMapSafely();
+  }
+
+  function canPrayAtCurrentStage() {
+    const stage = currentQuest.stages[state.currentStageIndex];
+    return requiresGpsCheckin(stage) && !checkin.pending && checkin.stageId === stage.id &&
+      checkin.distance !== null && checkin.distance <= getCheckinRadiusMeters() &&
+      checkin.verifiedAt !== null && Date.now() - checkin.verifiedAt <= GPS_VALID_MS;
+  }
+
+  function ensureValidCheckin() {
+    if (canPrayAtCurrentStage()) return true;
+    checkin.prayerTaps = 0;
+    checkin.message = "もう一度、現在地を確認してください。";
+    renderGpsUI();
+    return false;
+  }
+
+  function addPrayerPower() {
+    if (!ensureValidCheckin()) return;
+    checkin.prayerTaps = Math.min(5, checkin.prayerTaps + 1);
+    renderGpsUI();
+  }
+
+  function renderGpsUI() {
+    const stage = currentQuest.stages[state.currentStageIndex];
+    elements.gpsPanel.hidden = !stage;
+    elements.gpsTestNotice.hidden = !gpsTestEnabled;
+    elements.locationButton.disabled = !stage || checkin.pending;
+    elements.locationButton.textContent = checkin.pending ? "現在地を確認中..." : "現在地を確認する";
+    elements.distanceText.textContent = checkin.distance === null
+      ? "次の目的地まで：未確認" : `次の目的地まで：約${Math.round(checkin.distance)}m`;
+    elements.gpsStatus.textContent = checkin.message;
+    const accuracy = gpsPosition?.accuracy;
+    elements.gpsAccuracy.hidden = !Number.isFinite(accuracy);
+    elements.gpsAccuracy.textContent = Number.isFinite(accuracy)
+      ? `GPS誤差の目安：±${Math.ceil(accuracy)}m${accuracy > 50 ? "（誤差が大きめです。必要に応じて再確認してください。）" : ""}` : "";
+    const canPray = canPrayAtCurrentStage();
+    const percent = checkin.prayerTaps * 20;
+    elements.prayerPanel.hidden = !canPray;
+    elements.prayerMessage.textContent = percent >= 100 ? "祈りパワーMAX！" : "祈りの力をちょうだい！";
+    elements.prayerPercent.textContent = `${percent}%`;
+    elements.prayerGauge.value = percent;
+    elements.prayButton.hidden = percent >= 100;
+    elements.prayButton.disabled = !canPray;
+    elements.sealButton.hidden = !canPray || percent < 100;
+    elements.sealButton.disabled = !canPray || percent < 100;
+    if (stage?.type === "request" && checkin.distance !== null) {
+      elements.gpsStatus.textContent += " 花壇の妖精との会話を進めてください。";
+    }
+  }
+
+  function getGpsCurrentPoint() {
+    return gpsPosition && Date.now() - gpsPosition.capturedAt <= GPS_VALID_MS
+      ? [gpsPosition.lat, gpsPosition.lng] : null;
+  }
+
+  function renderCurrentLocationMarker() {
+    const point = getGpsCurrentPoint();
+    if (!point) return;
+    L.marker(point, {
+      icon: L.divIcon({ className: "", html: '<div class="gps-marker"></div>',
+        iconSize: [18, 18], iconAnchor: [9, 9] }),
+      title: "現在地", alt: "現在地", zIndexOffset: 1100
+    }).bindTooltip("現在地", { direction: "bottom", permanent: true,
+      className: "gps-location-tooltip", offset: [0, 12] }).addTo(markerLayer);
   }
 
   function clearAllStorage() {
@@ -393,6 +603,7 @@
         }
       });
 
+      renderCurrentLocationMarker();
       renderDragonLine();
       updateMapViewport(visibleStages);
       invalidateMapSoon();
@@ -499,14 +710,14 @@
       }
     }
     const target = getNextTargetPoint();
-    if (state.currentStageIndex > 0 && currentPoint && target) {
+    if (currentPoint && target && (state.currentStageIndex > 0 || getGpsCurrentPoint())) {
       return [currentPoint, target];
     }
     return visibleStages.map((stage) => [stage.lat, stage.lng]);
   }
 
-  // A future GPS integration can pass [lat, lng]; without it use the last arrival.
-  function updateMapViewport(visibleStages, currentPoint = getVirtualCurrentPoint()) {
+  // Prefer a recent GPS fix; otherwise keep the existing last-arrival viewport.
+  function updateMapViewport(visibleStages, currentPoint = getGpsCurrentPoint() || getVirtualCurrentPoint()) {
     const points = getViewportPoints(visibleStages, currentPoint);
     if (!map || !points.length) return;
     if (points.length === 1) {

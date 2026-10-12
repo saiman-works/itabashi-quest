@@ -4,6 +4,7 @@ const quest = {
   chapterTitle: "第一章：成仏暗渠",
   questTitle: "暗渠の龍を封印せよ",
   questSubtitle: "花壇の願いと暗渠の龍",
+  checkinRadiusMeters: 50,
   rewardCardTitle: "暗渠の龍封印カード",
   rewardCardDescription: "光が丘公園赤塚口から始まる、暗渠の龍封印の証。",
   stages: [
