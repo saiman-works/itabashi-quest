@@ -30,6 +30,11 @@
   let gpsRequestId = 0;
   let gpsTimeout = null;
   let checkin = createCheckinState();
+  let inspectTimer = null;
+  let investigating = false;
+  let lastResult = "";
+  let visualStageId = null;
+  let companionImageFailed = false;
 
   attachEmergencyReset();
   startWhenReady();
@@ -87,6 +92,10 @@
       "destinationLabel",
       "destinationName",
       "destinationPlace",
+      "destinationCard", "destinationVisualHost", "eventVisualHost", "stageMeta",
+      "stageNameLabel", "stageDescriptionLabel",
+      "destinationGuide", "stageVisual", "stageBackground", "stageCompanions", "investigateEffect",
+      "sealResult", "sealResultText", "dismissResultButton", "arrivalMessage",
       "gpsPanel",
       "gpsTestNotice",
       "locationButton",
@@ -118,6 +127,7 @@
       "rewardTitle",
       "rewardQuest",
       "rewardDescription",
+      "rewardType", "rewardCondition", "rewardDialogue",
       "clearedAt"
     ];
 
@@ -140,12 +150,8 @@
       if (stage?.introDialogue?.length && !dialogueState.completed) return;
       completeCurrentStage();
     };
-    elements.dialogueStartButton.onclick = () => {
-      dialogueState.index = 0;
-      renderIntroDialogue(currentQuest.stages[state.currentStageIndex], false);
-      elements.dialogueNextButton.focus();
-      invalidateMapSoon();
-    };
+    elements.dialogueStartButton.onclick = startIntroduction;
+    elements.dismissResultButton.onclick = () => { lastResult = ""; elements.sealResult.hidden = true; };
     elements.dialogueNextButton.onclick = advanceDialogue;
     elements.locationButton.onclick = requestCurrentLocation;
     elements.prayButton.onclick = addPrayerPower;
@@ -214,6 +220,15 @@
     const isCleared = state.currentStageIndex >= total;
     const currentStageIndex = Math.min(state.currentStageIndex, total - 1);
     const stage = currentQuest.stages[currentStageIndex];
+    const isOpening = state.currentStageIndex === 0;
+    elements.destinationCard.hidden = isOpening;
+    elements.stageMeta.hidden = isOpening;
+    elements.stageNameLabel.hidden = isOpening;
+    elements.stageDescriptionLabel.hidden = isOpening;
+    const visualHost = isOpening ? elements.eventVisualHost : elements.destinationVisualHost;
+    // Move the existing elements without recreating images, handlers or animation state.
+    visualHost.appendChild(elements.stageVisual);
+    visualHost.appendChild(elements.investigateEffect);
 
     console.log("render stage", state.currentStageIndex);
 
@@ -225,9 +240,13 @@
     elements.stageNumber.textContent = isCleared ? `${total} / ${total}` : `${stage.stageNo} / ${total}`;
     elements.stageName.textContent = isCleared ? "成仏完了" : stage.gameName;
     elements.destinationLabel.textContent = isCleared ? "クエスト完了" : "次の目的地";
-    elements.destinationName.textContent = isCleared ? "成仏完了" : stage.gameName;
+    elements.destinationName.textContent = isCleared ? "成仏完了" : stage.destinationTitle || stage.gameName;
     elements.destinationPlace.textContent = isCleared ? "花たちの願いが届きました。" : stage.realName;
     elements.stageDescription.textContent = isCleared ? stage.afterText : stage.beforeText;
+    elements.destinationGuide.hidden = isCleared || !stage.guideText;
+    elements.destinationGuide.textContent = stage.guideText || "";
+    elements.sealResult.hidden = !lastResult;
+    elements.sealResultText.textContent = lastResult;
 
     elements.progressText.textContent = `${state.completedStageIds.length} / ${total}`;
     elements.progressFill.style.width = `${Math.round((state.completedStageIds.length / total) * 100)}%`;
@@ -236,6 +255,7 @@
     elements.mainButton.disabled = isCleared;
     elements.manualClearButton.disabled = false;
     renderIntroDialogue(stage, isCleared);
+    renderStageVisual(stage, isCleared);
     if (requiresGpsCheckin(stage) && !isCleared) elements.mainButton.hidden = true;
     renderGpsUI();
 
@@ -256,6 +276,10 @@
       state.completedStageIds.push(stage.id);
     }
 
+    clearTimeout(inspectTimer);
+    investigating = false;
+    elements.dialogueStartButton.disabled = false;
+    lastResult = stage.type === "seal" ? stage.afterText : "";
     invalidateCheckin();
     state.currentStageIndex += 1;
     if (state.currentStageIndex >= total && !state.clearedAt) {
@@ -315,11 +339,60 @@
     else elements.fairyImage.removeAttribute("src");
   }
 
+  function startIntroduction() {
+    const stage = currentQuest.stages[state.currentStageIndex];
+    if (!stage?.introDialogue?.length || investigating || dialogueState.completed) return;
+    const begin = () => {
+      if (currentQuest.stages[state.currentStageIndex]?.id !== stage.id || !investigating) return;
+      investigating = false;
+      dialogueState.index = 0;
+      elements.dialogueStartButton.disabled = false;
+      elements.stageVisual.style.animation = "none";
+      renderStageVisual(stage, false);
+      renderIntroDialogue(stage, false);
+      elements.dialogueNextButton.focus();
+      invalidateMapSoon();
+    };
+    investigating = true;
+    if (stage.investigateText) {
+      elements.investigateEffect.hidden = false;
+      elements.investigateEffect.textContent = stage.investigateText;
+      elements.stageVisual.style.animation = "flower-rustle 450ms ease-in-out";
+      elements.dialogueStartButton.disabled = true;
+      inspectTimer = setTimeout(begin, 550);
+    } else begin();
+  }
+
+  function renderStageVisual(stage, isCleared) {
+    elements.stageVisual.hidden = isCleared || !stage.backgroundImage;
+    if (visualStageId !== stage.id) {
+      visualStageId = stage.id;
+      elements.investigateEffect.hidden = true;
+      elements.stageVisual.style.animation = "none";
+      elements.stageBackground.onerror = () => { elements.stageVisual.hidden = true; };
+      elements.stageBackground.alt = stage.backgroundAlt || stage.realName;
+      if (stage.backgroundImage) elements.stageBackground.src = stage.backgroundImage;
+      else elements.stageBackground.removeAttribute("src");
+      elements.stageCompanions.onerror = () => {
+        companionImageFailed = true;
+        elements.stageCompanions.hidden = true;
+      };
+      if (currentQuest.companionImage) elements.stageCompanions.src = currentQuest.companionImage;
+    }
+    elements.stageCompanions.hidden = companionImageFailed || !currentQuest.companionImage ||
+      (stage.type === "request" && dialogueState.index < 0);
+  }
+
   function resetProgress() {
     console.log("reset clicked");
     clearAllStorage();
     invalidateCheckin();
     gpsPosition = null;
+    clearTimeout(inspectTimer);
+    investigating = false;
+    lastResult = "";
+    visualStageId = null;
+    elements.dialogueStartButton.disabled = false;
     state = createInitialState();
     dialogueState = { stageId: null, index: -1, completed: false };
     renderApp();
@@ -474,7 +547,7 @@
 
   function renderGpsUI() {
     const stage = currentQuest.stages[state.currentStageIndex];
-    elements.gpsPanel.hidden = !stage;
+    elements.gpsPanel.hidden = !stage || state.currentStageIndex === 0;
     elements.gpsTestNotice.hidden = !gpsTestEnabled;
     elements.locationButton.disabled = !stage || checkin.pending;
     elements.locationButton.textContent = checkin.pending ? "現在地を確認中..." : "現在地を確認する";
@@ -488,8 +561,13 @@
     const canPray = canPrayAtCurrentStage();
     const percent = checkin.prayerTaps * 20;
     elements.prayerPanel.hidden = !canPray;
+    elements.arrivalMessage.hidden = !canPray || !stage?.arrivalText;
+    elements.arrivalMessage.textContent = stage?.arrivalText || "";
     elements.prayerMessage.textContent = percent >= 100 ? "祈りパワーMAX！" : "祈りの力をちょうだい！";
     elements.prayerPercent.textContent = `${percent}%`;
+    if (currentQuest.prayerMessages?.[checkin.prayerTaps]) {
+      elements.prayerMessage.textContent = currentQuest.prayerMessages[checkin.prayerTaps];
+    }
     elements.prayerGauge.value = percent;
     elements.prayButton.hidden = percent >= 100;
     elements.prayButton.disabled = !canPray;
@@ -538,6 +616,9 @@
     elements.rewardTitle.textContent = currentQuest.rewardCardTitle;
     elements.rewardQuest.textContent = currentQuest.questTitle;
     elements.rewardDescription.textContent = currentQuest.rewardCardDescription;
+    elements.rewardType.textContent = currentQuest.rewardCardType || "";
+    elements.rewardCondition.textContent = currentQuest.rewardCardCondition || "";
+    elements.rewardDialogue.textContent = currentQuest.rewardDialogue || "";
     elements.clearedAt.textContent = `クリア日時：${formatDateTime(state.clearedAt)}`;
   }
 

@@ -17,7 +17,13 @@ function boot({ search = '', supported = true, secure = true, leaflet = true } =
   const layers = [];
   const elements = Object.fromEntries([...html.matchAll(/id="([^"]+)"/g)].map((match) => [match[1], {
     textContent: '', hidden: false, disabled: false, style: {}, value: 0,
-    focus() {}, removeAttribute(name) { delete this[name]; }
+    focus() {}, removeAttribute(name) { delete this[name]; },
+    children: [], appendChild(child) {
+      if (child.parentElement) child.parentElement.children = child.parentElement.children.filter((item) => item !== child);
+      child.parentElement = this;
+      this.children.push(child);
+      return child;
+    }
   }]));
   const storage = () => {
     const data = new Map();
@@ -51,7 +57,14 @@ function boot({ search = '', supported = true, secure = true, leaflet = true } =
   vm.runInContext(fs.readFileSync(path.join(root, 'data/quests.js'), 'utf8'), context);
   // Expose only the pure distance helper to this isolated test context, not to the website.
   vm.runInContext(appSource.replace(/\}\)\(\);\s*$/, 'globalThis.distance = calculateDistanceMeters; })();'), context);
-  const click = (id) => elements[id].onclick();
+  const click = (id) => {
+    elements[id].onclick();
+    if (id === 'dialogueStartButton') {
+      for (const [key, timer] of timers) {
+        if (timer.ms === 550) { timers.delete(key); timer.fn(); }
+      }
+    }
+  };
   const position = (stageIndex = 1, meters = 0, accuracy = 10) => {
     const stage = context.quest.stages[stageIndex];
     return { coords: { latitude: stage.lat + meters / 6371000 * 180 / Math.PI,
@@ -65,8 +78,8 @@ test('zero-stage conversation is unchanged and GPS never starts automatically', 
   assert.equal(t.calls.length, 0);
   assert.equal(t.elements.mainButton.hidden, true);
   t.click('dialogueStartButton');
-  assert.equal(t.elements.dialogueText.textContent, 'たいへん、たいへん！');
-  for (let i = 0; i < 6; i++) t.click('dialogueNextButton');
+  assert.equal(t.elements.dialogueText.textContent, '見つかった！');
+  for (let i = 1; i < t.context.quest.stages[0].introDialogue.length; i++) t.click('dialogueNextButton');
   assert.equal(t.elements.dialogueNextButton.textContent, '会話を終える');
   t.click('dialogueNextButton');
   t.click('mainButton');
@@ -93,7 +106,7 @@ test('near destination needs five prayers and an explicit seal; next stage needs
     assert.equal(t.elements.prayerPercent.textContent, `${i * 20}%`);
     assert.equal(t.elements.sealButton.hidden, i < 5);
   }
-  assert.equal(t.elements.prayerMessage.textContent, '祈りパワーMAX！');
+  assert.match(t.elements.prayerMessage.textContent, /祈りパワーMAX！/);
   t.click('sealButton');
   assert.equal(t.elements.progressText.textContent, '2 / 9');
   assert.equal(t.elements.prayerPanel.hidden, true);
@@ -240,7 +253,7 @@ test('gpsTest=1 uses target coordinates without calling Geolocation, and preserv
       t.click('prayButton');
       assert.equal(t.elements.prayerPercent.textContent, `${taps * 20}%`);
     }
-    assert.equal(t.elements.prayerMessage.textContent, '祈りパワーMAX！');
+    assert.match(t.elements.prayerMessage.textContent, /祈りパワーMAX！/);
     t.click('sealButton');
     assert.equal(t.elements.progressText.textContent, `${stage + 1} / 9`);
   }
@@ -270,4 +283,68 @@ test('only exact gpsTest=1 enables the mode; debug is independent', () => {
     assert.equal(t.elements.dialogueStartButton.hidden, false);
     assert.equal(t.elements.prayerPanel.hidden, true);
   }
+});
+
+test('visual scenes, arrival, prayer lines, seal result and reward use quest data', () => {
+  const t = boot({ search: '?gpsTest=1' });
+  assert.equal(t.elements.stageBackground.src, 'assets/bg_start_flowerbed.png');
+  assert.equal(t.elements.stageCompanions.hidden, true);
+  assert.equal(t.elements.dialogueStartButton.textContent, '花壇をしらべる');
+  t.click('dialogueStartButton');
+  assert.equal(t.elements.investigateEffect.textContent, 'カサ……カサカサ……');
+  assert.equal(t.elements.stageCompanions.hidden, false);
+  assert.equal(t.context.quest.stages[0].introDialogue.length, 18);
+  t.click('manualClearButton');
+  assert.equal(t.elements.stageBackground.src, 'assets/bg_stage_tail_entrance.png');
+  t.click('locationButton');
+  assert.equal(t.elements.arrivalMessage.hidden, false);
+  assert.match(t.elements.arrivalMessage.textContent, /目的地に着いた！/);
+  for (let taps = 1; taps <= 5; taps++) {
+    t.click('prayButton');
+    assert.equal(t.elements.prayerMessage.textContent, t.context.quest.prayerMessages[taps]);
+  }
+  t.click('sealButton');
+  assert.match(t.elements.sealResultText.textContent, /しっぽの札が光った/);
+  assert.equal(t.elements.stageVisual.hidden, true);
+  t.click('dismissResultButton');
+  assert.equal(t.elements.sealResult.hidden, true);
+  for (let i = 0; i < 7; i++) t.click('manualClearButton');
+  assert.equal(t.elements.rewardTitle.textContent, '暗渠の龍のしるし');
+  assert.equal(t.elements.rewardType.textContent, 'タイプ：水の道カード');
+  t.click('reset-button');
+  assert.equal(t.elements.stageCompanions.hidden, true);
+  assert.equal(t.elements.sealResult.hidden, true);
+});
+
+test('inspection callback is ignored after manual clear', () => {
+  const t = boot();
+  t.elements.dialogueStartButton.onclick();
+  const timer = [...t.timers.values()].find((entry) => entry.ms === 550);
+  assert.equal(t.elements.dialogueStartButton.disabled, true);
+  t.click('manualClearButton');
+  timer.fn();
+  assert.equal(t.elements.progressText.textContent, '1 / 9');
+  assert.equal(t.elements.dialogueBox.hidden, true);
+});
+
+test('opening keeps visual and story together; GPS and destination layout return after introduction', () => {
+  const t = boot({ search: '?gpsTest=1' });
+  assert.equal(t.elements.gpsPanel.hidden, true);
+  assert.equal(t.elements.destinationCard.hidden, true);
+  assert.equal(t.elements.stageVisual.parentElement, t.elements.eventVisualHost);
+  t.click('dialogueStartButton');
+  assert.equal(t.elements.stageVisual.parentElement, t.elements.eventVisualHost);
+  for (let i = 1; i < 18; i++) t.click('dialogueNextButton');
+  t.click('dialogueNextButton');
+  t.click('mainButton');
+  assert.equal(t.elements.gpsPanel.hidden, false);
+  assert.equal(t.elements.destinationCard.hidden, false);
+  assert.equal(t.elements.stageVisual.parentElement, t.elements.destinationVisualHost);
+  t.click('locationButton');
+  for (let i = 0; i < 5; i++) t.click('prayButton');
+  t.click('sealButton');
+  assert.equal(t.elements.progressText.textContent, '2 / 9');
+  t.click('reset-button');
+  assert.equal(t.elements.stageVisual.parentElement, t.elements.eventVisualHost);
+  assert.equal(t.elements.gpsPanel.hidden, true);
 });
